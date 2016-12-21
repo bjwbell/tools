@@ -49,6 +49,7 @@ import (
 	"go/types"
 	"math/big"
 	"os"
+	"strings"
 )
 
 // If true, perform sanity checking and show diagnostic information at
@@ -335,6 +336,21 @@ type newPhi struct {
 // must be prepended to the block.
 type newPhiMap map[*BasicBlock][]newPhi
 
+func isSimd(t types.Type) bool {
+	names := []string{"I8x16", "I16x8", "I32x4", "I64x2", "I128", "U8x16",
+		"U16x8", "U32x4", "U64x2", "U128", "F32x4", "F64x2",
+		"M128i", "M128", "M128d"}
+	dereft := deref(t)
+	isSimd := false
+	for _, name := range names {
+		if strings.Contains(dereft.String(), name) {
+			isSimd = true
+			break
+		}
+	}
+	return isSimd
+}
+
 // liftAlloc determines whether alloc can be lifted into registers,
 // and if so, it populates newPhis with all the φ-nodes it may require
 // and returns true.
@@ -344,7 +360,12 @@ func liftAlloc(df domFrontier, alloc *Alloc, newPhis newPhiMap) bool {
 	// a way to express their zero-constants.
 	switch deref(alloc.Type()).Underlying().(type) {
 	case *types.Array, *types.Struct:
-		return false
+		// HACK, simd types are liftable
+		if isSimd(alloc.Type()) {
+
+		} else {
+			return false
+		}
 	}
 
 	// Don't lift named return values in functions that defer
@@ -388,6 +409,20 @@ func liftAlloc(df domFrontier, alloc *Alloc, newPhis newPhiMap) bool {
 	}
 	// The Alloc itself counts as a (zero) definition of the cell.
 	defblocks.add(alloc.Block())
+	defblocks.take()
+	// HACK, simd allocs can be lifted if used in only one block
+	if isSimd(deref(alloc.Type())) {
+		l := defblocks.BitLen()
+		numBlocks := 0
+		for i := 0; i < l; i++ {
+			if defblocks.Bit(i) == 1 {
+				numBlocks++
+			}
+		}
+		if numBlocks > 1 {
+			return false
+		}
+	}
 
 	if debugLifting {
 		fmt.Fprintln(os.Stderr, "\tlifting ", alloc, alloc.Name())
